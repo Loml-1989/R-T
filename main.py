@@ -7,18 +7,12 @@ from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from contextlib import asynccontextmanager
 import database
 
 HC_AI_URL = "https://ai.hackclub.com/proxy/v1/chat/completions"
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    database.setup_database()
-    yield
-
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -38,9 +32,6 @@ class GenerationResult(BaseModel):
     type: str
     result: str
 
-class ModelUpdate(BaseModel):
-    model_name: str
-
 async def verify_user(api_key: str = Security(user_scheme)) -> str:
     if not database.is_valid_key(api_key):
         raise HTTPException(status_code=403, detail="Invalid API Key")
@@ -49,7 +40,7 @@ async def verify_user(api_key: str = Security(user_scheme)) -> str:
 async def verify_admin(admin_key: str = Security(admin_scheme)) -> str:
     expected_key = os.environ.get("ADMIN_API_KEY")
     if not expected_key:
-        raise HTTPException(status_code=500, detail="Server missing admin configuration")
+        raise HTTPException(status_code=500, detail="Server missing ADMIN_API_KEY environment configuration")
     
     if not secrets.compare_digest(admin_key, expected_key):
         raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Key")
@@ -89,7 +80,7 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
         prompt += f"Bio: {gh_data.get('bio', 'None')}. Repos: {len(repo_data)}. "
         prompt += f"Recent work: {', '.join(repo_names)}."
 
-        active_model = database.get_active_model()
+        active_model = os.environ.get("HACKCLUB_AI_MODEL", "meta-llama/llama-3-8b-instruct")
 
         ai_payload = {
             "model": active_model,
@@ -128,8 +119,10 @@ async def admin_get_users(request: Request, admin_key: str = Depends(verify_admi
 async def admin_get_history(request: Request, admin_key: str = Depends(verify_admin), limit: int = Query(50), offset: int = Query(0)):
     return {"history": database.get_all_history(limit, offset)}
 
-@app.post("/admin/model")
-@limiter.limit("10/minute")
-async def admin_set_model(request: Request, payload: ModelUpdate, admin_key: str = Depends(verify_admin)):
-    database.set_active_model(payload.model_name)
-    return {"message": "Model updated successfully", "active_model": payload.model_name}
+@app.get("/admin/model")
+@limiter.limit("30/minute")
+async def admin_view_model(request: Request, admin_key: str = Depends(verify_admin)):
+    current_model = os.environ.get("HACKCLUB_AI_MODEL", "meta-llama/llama-3-8b-instruct")
+    return {
+        "current_active_model": current_model
+    }
