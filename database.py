@@ -2,7 +2,7 @@ import sqlite3
 from typing import List, Dict, Any
 
 def get_db():
-    conn = sqlite3.connect("roast_toast.db", check_same_thread=False)
+    conn = sqlite3.connect("/tmp/roast_toast.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
