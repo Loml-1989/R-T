@@ -88,7 +88,7 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
         )
 
         if ai_req.status_code != 200:
-            raise HTTPException(status_code=502, detail="Hack Club AI is down or failed")
+            raise HTTPException(status_code=502, detail=f"Hack Club AI Error: {ai_req.text}")
 
         output_text = ai_req.json()["choices"][0]["message"]["content"]
 
