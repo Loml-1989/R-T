@@ -11,7 +11,6 @@ from contextlib import asynccontextmanager
 import database
 
 HC_AI_URL = "https://ai.hackclub.com/proxy/v1/chat/completions"
-HC_AI_MODEL = "qwen/qwen3-32b"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,7 +22,8 @@ app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-header_scheme = APIKeyHeader(name="X-API-Key")
+user_scheme = APIKeyHeader(name="X-API-Key")
+admin_scheme = APIKeyHeader(name="X-Admin-Key")
 
 class Registration(BaseModel):
     api_key: str
@@ -38,10 +38,22 @@ class GenerationResult(BaseModel):
     type: str
     result: str
 
-async def verify_auth(api_key: str = Security(header_scheme)) -> str:
+class ModelUpdate(BaseModel):
+    model_name: str
+
+async def verify_user(api_key: str = Security(user_scheme)) -> str:
     if not database.is_valid_key(api_key):
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
+
+async def verify_admin(admin_key: str = Security(admin_scheme)) -> str:
+    expected_key = os.environ.get("ADMIN_API_KEY")
+    if not expected_key:
+        raise HTTPException(status_code=500, detail="Server missing admin configuration")
+    
+    if not secrets.compare_digest(admin_key, expected_key):
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Key")
+    return admin_key
 
 @app.post("/register", response_model=Registration)
 @limiter.limit("5/minute")
@@ -52,7 +64,7 @@ async def register(request: Request):
 
 @app.post("/generate", response_model=GenerationResult)
 @limiter.limit("10/minute")
-async def generate(request: Request, payload: GenerationPayload, api_key: str = Depends(verify_auth)):
+async def generate(request: Request, payload: GenerationPayload, api_key: str = Depends(verify_user)):
     if payload.interaction_type not in ["roast", "toast"]:
         raise HTTPException(status_code=400, detail="Type must be roast or toast")
         
@@ -60,13 +72,15 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
     if not ai_key:
         raise HTTPException(status_code=500, detail="Server missing AI credentials")
 
+    headers = {"User-Agent": "FastAPI-App"}
+
     async with httpx.AsyncClient() as client:
-        gh_user = await client.get(f"https://api.github.com/users/{payload.github_username}")
+        gh_user = await client.get(f"https://api.github.com/users/{payload.github_username}", headers=headers)
         if gh_user.status_code == 404:
             raise HTTPException(status_code=404, detail="User not found")
         
         gh_data = gh_user.json()
-        gh_repos = await client.get(f"https://api.github.com/users/{payload.github_username}/repos?sort=updated&per_page=5")
+        gh_repos = await client.get(f"https://api.github.com/users/{payload.github_username}/repos?sort=updated&per_page=5", headers=headers)
         repo_data = gh_repos.json() if gh_repos.status_code == 200 else []
 
         repo_names = [r.get("name") for r in repo_data]
@@ -75,8 +89,10 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
         prompt += f"Bio: {gh_data.get('bio', 'None')}. Repos: {len(repo_data)}. "
         prompt += f"Recent work: {', '.join(repo_names)}."
 
+        active_model = database.get_active_model()
+
         ai_payload = {
-            "model": HC_AI_MODEL,
+            "model": active_model,
             "messages": [{"role": "user", "content": prompt}]
         }
         
@@ -94,19 +110,26 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
 
     database.save_interaction(api_key, payload.github_username, payload.interaction_type, output_text)
     
-    return {
-        "target": payload.github_username,
-        "type": payload.interaction_type,
-        "result": output_text
-    }
+    return {"target": payload.github_username, "type": payload.interaction_type, "result": output_text}
 
 @app.get("/history")
 @limiter.limit("20/minute")
-async def history(
-    request: Request,
-    api_key: str = Depends(verify_auth),
-    limit: int = Query(10, ge=1, le=50),
-    offset: int = Query(0, ge=0)
-):
+async def history(request: Request, api_key: str = Depends(verify_user), limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
     records = database.get_user_history(api_key, limit, offset)
     return {"data": records, "limit": limit, "offset": offset}
+
+@app.get("/admin/users")
+@limiter.limit("30/minute")
+async def admin_get_users(request: Request, admin_key: str = Depends(verify_admin)):
+    return {"users": database.get_all_users()}
+
+@app.get("/admin/history")
+@limiter.limit("30/minute")
+async def admin_get_history(request: Request, admin_key: str = Depends(verify_admin), limit: int = Query(50), offset: int = Query(0)):
+    return {"history": database.get_all_history(limit, offset)}
+
+@app.post("/admin/model")
+@limiter.limit("10/minute")
+async def admin_set_model(request: Request, payload: ModelUpdate, admin_key: str = Depends(verify_admin)):
+    database.set_active_model(payload.model_name)
+    return {"message": "Model updated successfully", "active_model": payload.model_name}
