@@ -32,6 +32,9 @@ class GenerationResult(BaseModel):
     type: str
     result: str
 
+class ModelOverridePayload(BaseModel):
+    model_name: str
+
 async def verify_user(api_key: str = Security(user_scheme)) -> str:
     if not database.is_valid_key(api_key):
         raise HTTPException(status_code=403, detail="Invalid API Key")
@@ -119,10 +122,13 @@ async def admin_get_users(request: Request, admin_key: str = Depends(verify_admi
 async def admin_get_history(request: Request, admin_key: str = Depends(verify_admin), limit: int = Query(50), offset: int = Query(0)):
     return {"history": database.get_all_history(limit, offset)}
 
-@app.get("/admin/model")
-@limiter.limit("30/minute")
-async def admin_view_model(request: Request, admin_key: str = Depends(verify_admin)):
-    current_model = os.environ.get("HACKCLUB_AI_MODEL", "meta-llama/llama-3-8b-instruct")
+@app.post("/admin/model")
+@limiter.limit("10/minute")
+async def admin_set_model(request: Request, payload: ModelOverridePayload, admin_key: str = Depends(verify_admin)):
+    # Securely updates system environment values within the execution context
+    os.environ["HACKCLUB_AI_MODEL"] = payload.model_name
     return {
-        "current_active_model": current_model
+        "status": "success",
+        "updated_model": payload.model_name,
+        "note": "Context target initialized. For absolute persistence across serverless cold starts, update your variable inside Vercel Dashboard directly."
     }
