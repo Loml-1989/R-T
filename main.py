@@ -23,8 +23,8 @@ app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-user_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
-admin_scheme = APIKeyHeader(name="X-Admin-Key", auto_error=False)
+user_scheme = APIKeyHeader(name="X-API-Key", scheme_name="UserApiKey", auto_error=False)
+admin_scheme = APIKeyHeader(name="X-Admin-Key", scheme_name="AdminApiKey", auto_error=False)
 
 
 class Registration(BaseModel):
@@ -47,19 +47,7 @@ class ModelOverridePayload(BaseModel):
     model_name: str
 
 
-async def verify_user(
-    api_key: str = Security(user_scheme),
-    admin_key: str = Security(admin_scheme),
-) -> str:
-    # A valid admin key is also accepted anywhere a regular user key is.
-    if admin_key:
-        expected_admin = os.environ.get("ADMIN_API_KEY")
-        if not expected_admin:
-            raise HTTPException(status_code=500, detail="Server missing ADMIN_API_KEY env var.")
-        if secrets.compare_digest(admin_key, expected_admin):
-            return "admin_master_override"
-        raise HTTPException(status_code=403, detail="Invalid X-Admin-Key.")
-
+async def verify_user(api_key: str = Security(user_scheme)) -> str:
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
 
