@@ -112,7 +112,7 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
             prompt += f"Bio: {gh_data.get('bio', 'None')}. Repos: {len(repo_data)}. "
             prompt += f"Recent work: {', '.join(repo_names)}."
 
-            active_model = os.environ.get("HACKCLUB_AI_MODEL", "meta-llama/llama-3-8b-instruct")
+            active_model = os.environ.get("HACKCLUB_AI_MODEL", "qwen/qwen3.6-flash")
 
             ai_payload = {
                 "model": active_model,
@@ -125,6 +125,8 @@ async def generate(request: Request, payload: GenerationPayload, api_key: str = 
                 json=ai_payload
             )
 
+            if ai_req.status_code == 429:
+                raise HTTPException(status_code=429, detail="Hack Club AI rate limit exceeded (450 requests / 30 min). Try again shortly.")
             if ai_req.status_code != 200:
                 raise HTTPException(status_code=502, detail=f"Hack Club AI Error: {ai_req.text}")
 
@@ -166,6 +168,22 @@ async def admin_get_history(request: Request, admin_key: str = Depends(verify_ad
 @app.post("/admin/model")
 @limiter.limit("10/minute")
 async def admin_set_model(request: Request, payload: ModelOverridePayload, admin_key: str = Depends(verify_admin)):
+    valid_ids = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            models_req = await client.get("https://ai.hackclub.com/proxy/v1/models")
+            if models_req.status_code == 200:
+                valid_ids = {m.get("id") for m in models_req.json().get("data", [])}
+    except httpx.RequestError:
+        pass  # Catalog lookup is best-effort; don't block the admin if it's unreachable.
+
+    if valid_ids is not None and payload.model_name not in valid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{payload.model_name}' is not in Hack Club AI's current model list. "
+                   f"Check https://ai.hackclub.com/proxy/v1/models for valid IDs."
+        )
+
     os.environ["HACKCLUB_AI_MODEL"] = payload.model_name
     return {
         "status": "success",
