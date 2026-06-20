@@ -47,34 +47,38 @@ async def verify_user(api_key: str = Security(user_scheme)) -> str:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
 
-async def verify_user(request: Request, api_key: str = Security(user_scheme)) -> str:
+async def verify_user(request: Request) -> str:
     admin_key = request.headers.get("x-admin-key")
     if admin_key:
         expected_admin = os.environ.get("ADMIN_API_KEY")
         if not expected_admin:
-            raise HTTPException(
-                status_code=500, 
-                detail="Vercel is missing the ADMIN_API_KEY environment variable. Add it and hit Redeploy."
-            )
+            raise HTTPException(status_code=500, detail="Vercel missing ADMIN_API_KEY env var.")
         if secrets.compare_digest(admin_key, expected_admin):
             return "admin_master_override"
-        else:
-            raise HTTPException(
-                status_code=403, 
-                detail="The X-Admin-Key you provided is incorrect and does not match Vercel."
-            )
+        raise HTTPException(status_code=403, detail="Invalid X-Admin-Key.")
 
+    api_key = request.headers.get("x-api-key")
     if not api_key:
-        raise HTTPException(
-            status_code=401, 
-            detail="Missing X-API-Key header. (If using FastAPI /docs, make sure you put the key in the correct box!)"
-        )
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
         
     if not database.is_valid_key(api_key):
-        raise HTTPException(
-            status_code=403, 
-            detail="Invalid X-API-Key."
-        )
+        raise HTTPException(status_code=403, detail="Invalid X-API-Key.")
+        
+    return api_key
+
+async def verify_admin(request: Request) -> str:
+    admin_key = request.headers.get("x-admin-key")
+    if not admin_key:
+        raise HTTPException(status_code=401, detail="Missing X-Admin-Key header.")
+        
+    expected_key = os.environ.get("ADMIN_API_KEY")
+    if not expected_key:
+        raise HTTPException(status_code=500, detail="Vercel missing ADMIN_API_KEY env var.")
+    
+    if not secrets.compare_digest(admin_key, expected_key):
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Key.")
+        
+    return admin_key
         
     return api_key
 
@@ -165,11 +169,10 @@ async def admin_get_users(request: Request, admin_key: str = Depends(verify_admi
 async def admin_get_history(request: Request, admin_key: str = Depends(verify_admin), limit: int = Query(50), offset: int = Query(0)):
     return {"history": database.get_all_history(limit, offset)}
 
-@app.post("/admin/model")
+@app.post("/generate", response_model=GenerationResult)
 @limiter.limit("10/minute")
-async def admin_set_model(request: Request, payload: ModelOverridePayload, admin_key: str = Depends(verify_admin)):
-    os.environ["HACKCLUB_AI_MODEL"] = payload.model_name
-    return {
+async def generate(request: Request, payload: GenerationPayload, api_key: str = Depends(verify_user)):    os.environ["HACKCLUB_AI_MODEL"] = payload.model_name
+return {
         "status": "success",
         "updated_model": payload.model_name,
         "note": "For absolute persistence across Vercel cold starts, update HACKCLUB_AI_MODEL inside Vercel Environment Variables directly."
