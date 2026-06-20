@@ -1,5 +1,4 @@
 import sqlite3
-import os
 from typing import List, Dict, Any
 
 DB_PATH = "/tmp/roast_toast.db"
@@ -9,7 +8,7 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
-def setup_database():
+def ensure_tables():
     with get_db() as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -17,7 +16,6 @@ def setup_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
         db.execute("""
             CREATE TABLE IF NOT EXISTS interactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,65 +29,45 @@ def setup_database():
         """)
         db.commit()
 
-# Self-initialize on module load safely
-try:
-    setup_database()
-except Exception:
-    pass
+def execute_write(query: str, params: tuple = ()):
+    ensure_tables()
+    with get_db() as db:
+        db.execute(query, params)
+        db.commit()
+
+def execute_read(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    ensure_tables()
+    try:
+        with get_db() as db:
+            cursor = db.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.OperationalError:
+        return []
 
 def create_api_key(api_key: str):
-    setup_database()  # Safety check
-    with get_db() as db:
-        db.execute("INSERT INTO users (api_key) VALUES (?)", (api_key,))
-        db.commit()
+    execute_write("INSERT INTO users (api_key) VALUES (?)", (api_key,))
 
 def is_valid_key(api_key: str) -> bool:
-    try:
-        setup_database()
-        with get_db() as db:
-            cursor = db.execute("SELECT 1 FROM users WHERE api_key = ?", (api_key,))
-            return cursor.fetchone() is not None
-    except Exception:
-        return False
+    res = execute_read("SELECT 1 FROM users WHERE api_key = ?", (api_key,))
+    return len(res) > 0
 
 def save_interaction(api_key: str, target: str, type_str: str, result: str):
-    setup_database()
-    with get_db() as db:
-        db.execute(
-            "INSERT INTO interactions (api_key, target_username, interaction_type, result_text) VALUES (?, ?, ?, ?)",
-            (api_key, target, type_str, result)
-        )
-        db.commit()
+    execute_write(
+        "INSERT INTO interactions (api_key, target_username, interaction_type, result_text) VALUES (?, ?, ?, ?)",
+        (api_key, target, type_str, result)
+    )
 
 def get_user_history(api_key: str, limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
-    try:
-        setup_database()
-        with get_db() as db:
-            cursor = db.execute(
-                "SELECT id, target_username, interaction_type, result_text, created_at FROM interactions WHERE api_key = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (api_key, limit, offset)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception:
-        return []
+    return execute_read(
+        "SELECT id, target_username, interaction_type, result_text, created_at FROM interactions WHERE api_key = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (api_key, limit, offset)
+    )
 
 def get_all_users() -> List[Dict[str, Any]]:
-    try:
-        setup_database()
-        with get_db() as db:
-            cursor = db.execute("SELECT api_key, created_at FROM users ORDER BY created_at DESC")
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception:
-        return []
+    return execute_read("SELECT api_key, created_at FROM users ORDER BY created_at DESC")
 
 def get_all_history(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-    try:
-        setup_database()
-        with get_db() as db:
-            cursor = db.execute(
-                "SELECT id, api_key, target_username, interaction_type, created_at FROM interactions ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (limit, offset)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-    except Exception:
-        return []
+    return execute_read(
+        "SELECT id, api_key, target_username, interaction_type, created_at FROM interactions ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, offset)
+    )
