@@ -47,17 +47,36 @@ async def verify_user(api_key: str = Security(user_scheme)) -> str:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
 
-async def verify_admin(admin_key: str = Security(admin_scheme)) -> str:
-    if not admin_key:
-        raise HTTPException(status_code=401, detail="Missing X-Admin-Key header")
+async def verify_user(request: Request, api_key: str = Security(user_scheme)) -> str:
+    admin_key = request.headers.get("x-admin-key")
+    if admin_key:
+        expected_admin = os.environ.get("ADMIN_API_KEY")
+        if not expected_admin:
+            raise HTTPException(
+                status_code=500, 
+                detail="Vercel is missing the ADMIN_API_KEY environment variable. Add it and hit Redeploy."
+            )
+        if secrets.compare_digest(admin_key, expected_admin):
+            return "admin_master_override"
+        else:
+            raise HTTPException(
+                status_code=403, 
+                detail="The X-Admin-Key you provided is incorrect and does not match Vercel."
+            )
+
+    if not api_key:
+        raise HTTPException(
+            status_code=401, 
+            detail="Missing X-API-Key header. (If using FastAPI /docs, make sure you put the key in the correct box!)"
+        )
         
-    expected_key = os.environ.get("ADMIN_API_KEY")
-    if not expected_key:
-        raise HTTPException(status_code=500, detail="Server missing ADMIN_API_KEY configuration")
-    
-    if not secrets.compare_digest(admin_key, expected_key):
-        raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Key")
-    return admin_key
+    if not database.is_valid_key(api_key):
+        raise HTTPException(
+            status_code=403, 
+            detail="Invalid X-API-Key."
+        )
+        
+    return api_key
 
 @app.post("/register", response_model=Registration)
 @limiter.limit("5/minute")
